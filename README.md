@@ -1,4 +1,4 @@
-# vera-anchor-js
+# vera-anchor
 
 Local-first SDK for deterministic evidence generation and dataset anchoring for [Hash Factory](https://hf.veraanchor.com). Part of the [Vera Anchor](https://veraanchor.com) ecosystem.
 
@@ -7,14 +7,14 @@ Raw data never leaves your machine. Only derived evidence packages are submitted
 ## Installation
 
 ```bash
-npm install vera-anchor-js
+npm install vera-anchor
 ```
 
 Requires Node.js with ESM support.
 
 ## What it does
 
-`vera-anchor-js` builds deterministic evidence packages on your machine composed of SHA3-512 hashes, Merkle proofs, bundle manifests, fingerprints, and receipts. It then optionally submits that evidence to Hash Factory for registration, HCS anchoring, and certificate issuance.
+`vera-anchor` builds deterministic evidence packages on your machine composed of SHA3-512 hashes, Merkle proofs, bundle manifests, fingerprints, and receipts. It then optionally submits that evidence to Hash Factory for registration, HCS anchoring, and certificate issuance.
 
 Two operating modes:
 
@@ -28,7 +28,7 @@ For directory-backed datasets.
 ### Local only
 
 ```js
-import { executeDatasetAnchorLocalOnly } from "vera-anchor-js";
+import { executeDatasetAnchorLocalOnly } from "vera-anchor";
 
 const result = await executeDatasetAnchorLocalOnly({
   identity: {
@@ -47,7 +47,7 @@ console.log(result.local.evidence);
 ### Local then submit to Hash Factory
 
 ```js
-import { executeDatasetAnchorLocalThenSubmit } from "vera-anchor-js";
+import { executeDatasetAnchorLocalThenSubmit } from "vera-anchor";
 
 const result = await executeDatasetAnchorLocalThenSubmit(
   {
@@ -76,7 +76,7 @@ console.log(result.remote.receipt);
 ### Verify
 
 ```js
-import { verifyDatasetAnchorRemote } from "vera-anchor-js";
+import { verifyDatasetAnchorRemote } from "vera-anchor";
 
 const result = await verifyDatasetAnchorRemote(
   {
@@ -105,7 +105,7 @@ material kinds do not infer a default pointer from a filesystem path.
 ### Local only
 
 ```js
-import { ingest } from "vera-anchor-js";
+import { ingest } from "vera-anchor";
 
 const result = await ingest.executeIngestLocalOnly({
   request: {
@@ -129,7 +129,7 @@ const result = await ingest.executeIngestLocalOnly({
 ### Local then submit
 
 ```js
-import { ingest } from "vera-anchor-js";
+import { ingest } from "vera-anchor";
 
 const result = await ingest.executeIngestLocalThenSubmit(
   {
@@ -209,4 +209,5 @@ The Vera Anchor Hash Factory is the web interface where users onboard, manage ev
 
 ## License
 
-MIT — see [LICENSE](./LICENSE).
+MIT + Commons Clause — full license text:
+https://github.com/VeraAnchor/vera-anchor-js/blob/main/LICENSE
