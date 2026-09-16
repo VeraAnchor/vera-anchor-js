@@ -1,6 +1,6 @@
 // ============================================================================
 // File: src/datasets/validators.ts
-// Version: 1.0-hf-datasets-runtime-validators-v1 | 2026-03-06
+// Version: 1.2-receipt-runtime-hardening | 2026-09-08
 // Purpose:
 //   Runtime validation for untrusted dataset-anchor JSON at HF boundaries.
 //   - parseAnchorPlanRequestV1(body)
@@ -14,13 +14,21 @@
 //   - Sanitizes metadata to plain JSON-safe structures.
 // ============================================================================
 
-import type { DatasetBundleV1, DatasetIdentity, DatasetRules, HashedFile } from "./types.js";
+import type {
+  DatasetBundleV1,
+  DatasetIdentity,
+  DatasetRules,
+  HashedFile,
+  HederaNetwork,
+} from "./types.js";
 import { HF_HASH_CONTRACT_INFO } from "../hashing/contract.js";
 
 const RE_DATASET_KEY = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$/;
+const RE_DATASET_KEY_CANONICAL = /^[a-z0-9][a-z0-9_.:-]{0,255}$/;
 const RE_PROGRAM = /^[a-z][a-z0-9_:-]{1,63}$/;
 const RE_HEX512 = /^[0-9a-f]{128}$/;
 const VALID_MODES = new Set(["hash_only", "register_and_anchor"]);
+const VALID_HEDERA_NETWORKS = new Set(["testnet", "mainnet"]);
 
 const MAX_DATASET_KEY_LEN = 256;
 const MAX_VERSION_LABEL_LEN = 64;
@@ -123,6 +131,20 @@ function parseAnchorMode(
   return s as "hash_only" | "register_and_anchor";
 }
 
+function parseHederaNetwork(
+  x: unknown,
+  where = "hedera_network"
+): HederaNetwork | undefined {
+  if (x === undefined || x === null || x === "") return undefined;
+  const network = asString(x, where).trim().toLowerCase();
+  if (!VALID_HEDERA_NETWORKS.has(network)) {
+    throw new DatasetValidationError(`${where}_invalid`, {
+      code: "UNSUPPORTED_HEDERA_NETWORK",
+    });
+  }
+  return network as HederaNetwork;
+}
+
 function parsePublishVisibility(
   x: unknown,
   where = "publish_visibility"
@@ -138,6 +160,26 @@ function parsePublishVisibility(
 function parseDatasetKey(x: unknown): string {
   const s = asString(x, "dataset_key").trim();
   if (!s || s.length > MAX_DATASET_KEY_LEN || !RE_DATASET_KEY.test(s)) {
+    throw new DatasetValidationError("dataset_key_invalid", { code: "SCHEMA_INVALID" });
+  }
+  return s;
+}
+
+function normalizeRequestDatasetKey(x: unknown): string {
+  return asString(x, "dataset_key")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "-")
+    .replace(/[^a-z0-9_.:-]/g, "")
+    .replace(/-+/g, "-")
+    .replace(/^[^a-z0-9]+/g, "")
+    .replace(/[^a-z0-9]+$/g, "")
+    .slice(0, MAX_DATASET_KEY_LEN);
+}
+
+function parseRequestDatasetKey(x: unknown): string {
+  const s = normalizeRequestDatasetKey(x);
+  if (!s || s.length > MAX_DATASET_KEY_LEN || !RE_DATASET_KEY_CANONICAL.test(s)) {
     throw new DatasetValidationError("dataset_key_invalid", { code: "SCHEMA_INVALID" });
   }
   return s;
@@ -211,11 +253,16 @@ function sanitizeJsonValue(x: unknown, depth = 0): unknown {
   return Object.freeze(out);
 }
 
-function parseIdentity(x: unknown): DatasetIdentity {
+function parseIdentity(
+  x: unknown,
+  opts: Readonly<{ normalizeDatasetKey?: boolean }> = {}
+): DatasetIdentity {
   if (!isRecord(x)) throw new DatasetValidationError("identity_invalid", { code: "SCHEMA_INVALID" });
   assertNoUnknownKeys(x, ["dataset_key", "version_label", "program"], "identity");
 
-  const dataset_key = parseDatasetKey(x.dataset_key);
+  const dataset_key = opts.normalizeDatasetKey
+    ? parseRequestDatasetKey(x.dataset_key)
+    : parseDatasetKey(x.dataset_key);
   const version_label = asOptionalString(x.version_label, "version_label", MAX_VERSION_LABEL_LEN);
   const program = parseProgram(x.program);
 
@@ -301,6 +348,7 @@ function parseAnchorResultV1(body: unknown) {
 export type AnchorPlanRequestV1 = Readonly<{
   mode: "hash_only" | "register_and_anchor";
   identity: DatasetIdentity;
+  hedera_network?: HederaNetwork;
   rules?: DatasetRules;
   issue_certificate?: boolean;
 }>;
@@ -308,6 +356,7 @@ export type AnchorPlanRequestV1 = Readonly<{
 export type AnchorExecuteRequestV1 = Readonly<{
   mode: "hash_only" | "register_and_anchor";
   identity: DatasetIdentity;
+  hedera_network?: HederaNetwork;
   root_dir: string;
   rules?: DatasetRules;
   display_name?: string;
@@ -321,6 +370,7 @@ export type AnchorExecuteRequestV1 = Readonly<{
 export type AnchorSubmitRequestV1 = Readonly<{
   mode: "register_and_anchor";
   identity: DatasetIdentity;
+  hedera_network?: HederaNetwork;
   evidence: Readonly<{
     dataset_key: string;
     dataset_fingerprint: string;
@@ -339,10 +389,15 @@ export type AnchorSubmitRequestV1 = Readonly<{
 
 export function parseAnchorPlanRequestV1(body: unknown): AnchorPlanRequestV1 {
   if (!isRecord(body)) throw new DatasetValidationError("request_invalid_body", { code: "SCHEMA_INVALID" });
-  assertNoUnknownKeys(body, ["mode", "identity", "rules", "issue_certificate"], "AnchorPlanRequestV1");
- 
+  assertNoUnknownKeys(
+    body,
+    ["mode", "identity", "hedera_network", "rules", "issue_certificate"],
+    "AnchorPlanRequestV1"
+  );
+
   const mode = parseAnchorMode(body.mode);
-  const identity = parseIdentity(body.identity);
+  const identity = parseIdentity(body.identity, { normalizeDatasetKey: true });
+  const hedera_network = parseHederaNetwork(body.hedera_network);
   const rules = parseRules(body.rules);
   const issue_certificate =
     body.issue_certificate === undefined
@@ -352,6 +407,7 @@ export function parseAnchorPlanRequestV1(body: unknown): AnchorPlanRequestV1 {
   return Object.freeze({
     mode,
     identity,
+    ...(hedera_network ? { hedera_network } : {}),
     ...(rules ? { rules } : {}),
     ...(issue_certificate !== undefined ? { issue_certificate } : {}),
   });
@@ -361,12 +417,13 @@ export function parseAnchorExecuteRequestV1(body: unknown): AnchorExecuteRequest
   if (!isRecord(body)) throw new DatasetValidationError("request_invalid_body", { code: "SCHEMA_INVALID" });
   assertNoUnknownKeys(
     body,
-    ["mode", "identity", "root_dir", "rules", "display_name", "metadata", "evidence_pointer", "publish_visibility", "set_active", "issue_certificate"],
+    ["mode", "identity", "hedera_network", "root_dir", "rules", "display_name", "metadata", "evidence_pointer", "publish_visibility", "set_active", "issue_certificate"],
     "AnchorExecuteRequestV1"
   );
 
   const mode = parseAnchorMode(body.mode);
-  const identity = parseIdentity(body.identity);
+  const identity = parseIdentity(body.identity, { normalizeDatasetKey: true });
+  const hedera_network = parseHederaNetwork(body.hedera_network);
 
   const root_dir = asString(body.root_dir, "root_dir").trim();
   if (!root_dir || root_dir.length > MAX_ROOT_DIR_LEN) {
@@ -402,6 +459,7 @@ export function parseAnchorExecuteRequestV1(body: unknown): AnchorExecuteRequest
   return Object.freeze({
     mode,
     identity,
+    ...(hedera_network ? { hedera_network } : {}),
     root_dir,
     ...(rules ? { rules } : {}),
     ...(display_name !== undefined ? { display_name } : {}),
@@ -417,7 +475,7 @@ export function parseAnchorSubmitRequestV1(body: unknown): AnchorSubmitRequestV1
   if (!isRecord(body)) throw new DatasetValidationError("request_invalid_body", { code: "SCHEMA_INVALID" });
   assertNoUnknownKeys(
     body,
-    ["mode", "identity", "evidence", "display_name", "metadata", "evidence_pointer", "publish_visibility", "set_active", "issue_certificate"],
+    ["mode", "identity", "hedera_network", "evidence", "display_name", "metadata", "evidence_pointer", "publish_visibility", "set_active", "issue_certificate"],
     "AnchorSubmitRequestV1"
   );
 
@@ -426,7 +484,8 @@ export function parseAnchorSubmitRequestV1(body: unknown): AnchorSubmitRequestV1
     throw new DatasetValidationError("submit_mode_invalid", { code: "SCHEMA_INVALID" });
   }
 
-  const identity = parseIdentity(body.identity);
+  const identity = parseIdentity(body.identity, { normalizeDatasetKey: true });
+  const hedera_network = parseHederaNetwork(body.hedera_network);
   const evidence = parseAnchorResultV1(body.evidence);
   const display_name = asOptionalString(body.display_name, "display_name", MAX_DISPLAY_NAME_LEN);
   const evidence_pointer = asOptionalString(body.evidence_pointer, "evidence_pointer", MAX_POINTER_LEN);
@@ -453,9 +512,16 @@ export function parseAnchorSubmitRequestV1(body: unknown): AnchorSubmitRequestV1
     throw new DatasetValidationError("evidence_pointer_required", { code: "SCHEMA_INVALID" });
   }
 
+  if (identity.dataset_key !== evidence.dataset_key) {
+    throw new DatasetValidationError("identity_evidence_dataset_key_mismatch", {
+      code: "SCHEMA_INVALID",
+    });
+  }
+
   return Object.freeze({
     mode,
     identity,
+    ...(hedera_network ? { hedera_network } : {}),
     evidence,
     evidence_pointer,
     ...(display_name !== undefined ? { display_name } : {}),
@@ -552,7 +618,7 @@ export function parseDatasetBundleV1(body: unknown): DatasetBundleV1 {
     ...(exclude_globs ? { exclude_globs } : {}),
     ...(allowed_suffixes ? { allowed_suffixes } : {}),
   });
- 
+
 
   if (!Array.isArray(body.files)) {
     throw new DatasetValidationError("bundle_files_invalid", { code: "SCHEMA_INVALID" });
@@ -593,6 +659,7 @@ export type DatasetReceiptV1 = Readonly<{
   kind: "dataset_anchor_receipt";
   receipt_id: string;
   mode: "hash_only" | "register_and_anchor";
+  hedera_network?: HederaNetwork;
   dataset_identity: DatasetIdentity;
   rules: Readonly<Record<string, unknown>>;
   evidence: Readonly<{
@@ -611,7 +678,11 @@ export type DatasetReceiptV1 = Readonly<{
 
 export function parseDatasetReceiptV1(body: unknown): DatasetReceiptV1 {
   if (!isRecord(body)) throw new DatasetValidationError("receipt_invalid_body", { code: "SCHEMA_INVALID" });
-  assertNoUnknownKeys(body, ["v", "kind", "receipt_id", "mode", "dataset_identity", "rules", "evidence", "pointers", "core"], "DatasetReceiptV1");
+  assertNoUnknownKeys(
+    body,
+    ["v", "kind", "receipt_id", "mode", "hedera_network", "dataset_identity", "rules", "evidence", "pointers", "core"],
+    "DatasetReceiptV1"
+  );
 
   const v = asString(body.v, "v");
   if (v !== "v1") throw new DatasetValidationError("receipt_version_invalid", { code: "SCHEMA_INVALID" });
@@ -628,6 +699,12 @@ export function parseDatasetReceiptV1(body: unknown): DatasetReceiptV1 {
 
   const modeRaw = asString(body.mode, "mode").trim();
   const mode = parseAnchorMode(modeRaw, "mode");
+  const hedera_network = parseHederaNetwork(body.hedera_network);
+  if (mode === "hash_only" && hedera_network) {
+    throw new DatasetValidationError("hash_only_hedera_network_invalid", {
+      code: "SCHEMA_INVALID",
+    });
+  }
 
   const dataset_identity = parseIdentity(body.dataset_identity);
 
@@ -636,13 +713,31 @@ export function parseDatasetReceiptV1(body: unknown): DatasetReceiptV1 {
 
   if (!isRecord(body.evidence)) throw new DatasetValidationError("receipt_evidence_invalid", { code: "SCHEMA_INVALID" });
   assertNoUnknownKeys(body.evidence, ["dataset_fingerprint", "bundle_digest", "merkle_root", "idempotency_key", "file_count", "total_bytes"], "DatasetReceiptV1.evidence");
+  const dataset_fingerprint = asOptionalHex512((body.evidence as any).dataset_fingerprint, "dataset_fingerprint");
+  const bundle_digest = asOptionalHex512((body.evidence as any).bundle_digest, "bundle_digest");
+  const merkle_root = asOptionalHex512((body.evidence as any).merkle_root, "merkle_root");
+  const idempotency_key = asOptionalHex512((body.evidence as any).idempotency_key, "idempotency_key");
+  const file_count = asOptionalNonNegativeInt((body.evidence as any).file_count, "file_count");
+  const total_bytes = asOptionalNonNegativeInt((body.evidence as any).total_bytes, "total_bytes");
+
+  if (
+    !dataset_fingerprint ||
+    !bundle_digest ||
+    !merkle_root ||
+    !idempotency_key ||
+    file_count === undefined ||
+    total_bytes === undefined
+  ) {
+    throw new DatasetValidationError("receipt_evidence_invalid", { code: "SCHEMA_INVALID" });
+  }
+
   const evidence = Object.freeze({
-    dataset_fingerprint: asOptionalHex512((body.evidence as any).dataset_fingerprint, "dataset_fingerprint")!,
-    bundle_digest: asOptionalHex512((body.evidence as any).bundle_digest, "bundle_digest")!,
-    merkle_root: asOptionalHex512((body.evidence as any).merkle_root, "merkle_root")!,
-    idempotency_key: asOptionalHex512((body.evidence as any).idempotency_key, "idempotency_key")!,
-    file_count: asOptionalNonNegativeInt((body.evidence as any).file_count, "file_count")!,
-    total_bytes: asOptionalNonNegativeInt((body.evidence as any).total_bytes, "total_bytes")!,
+    dataset_fingerprint,
+    bundle_digest,
+    merkle_root,
+    idempotency_key,
+    file_count,
+    total_bytes,
   });
 
   let pointers: { evidence_pointer?: string } | undefined;
@@ -658,11 +753,29 @@ export function parseDatasetReceiptV1(body: unknown): DatasetReceiptV1 {
   const core =
     body.core === undefined ? undefined : (sanitizeJsonValue(body.core) as Record<string, unknown>);
 
+  if (hedera_network && core) {
+    const candidates = [
+      (core as any)?.dataset?.hedera_network,
+      (core as any)?.version?.hedera_network,
+      (core as any)?.published?.hedera_network,
+    ].filter((value) => value != null && String(value).trim() !== "");
+
+    for (const candidate of candidates) {
+      const coreNetwork = parseHederaNetwork(candidate, "core.hedera_network");
+      if (coreNetwork && coreNetwork !== hedera_network) {
+        throw new DatasetValidationError("receipt_hedera_network_mismatch", {
+          code: "DATASET_NETWORK_IDENTITY_MISMATCH",
+        });
+      }
+    }
+  }
+
   return Object.freeze({
     v: "v1",
     kind: "dataset_anchor_receipt",
     receipt_id,
     mode,
+    ...(hedera_network ? { hedera_network } : {}),
     dataset_identity,
     rules,
     evidence,

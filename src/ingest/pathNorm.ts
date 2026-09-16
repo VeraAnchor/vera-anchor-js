@@ -22,6 +22,7 @@ function splitPosixSegments(input: string): string[] {
 
 export function normalizeRelPath(input: string): string {
   const raw = String(input ?? "").trim();
+
   if (!raw) {
     throw new IngestValidationError("path_empty", { code: "PATH_INVALID" });
   }
@@ -31,45 +32,64 @@ export function normalizeRelPath(input: string): string {
   }
 
   if (RE_CONTROL.test(raw)) {
-    throw new IngestValidationError("path_control_chars", { code: "PATH_INVALID" });
+    throw new IngestValidationError("path_control_chars", {
+      code: "PATH_INVALID",
+    });
   }
 
-  if (raw.startsWith("/") || raw.startsWith("\\") || RE_WINDOWS_DRIVE.test(raw)) {
-    throw new IngestValidationError("path_must_be_relative", { code: "PATH_INVALID" });
-  }
-
-  if (raw.startsWith("./") || raw.startsWith(".\\")) {
-    throw new IngestValidationError("path_dot_prefix_forbidden", { code: "PATH_INVALID" });
+  if (
+    raw.startsWith("/") ||
+    raw.startsWith("\\") ||
+    RE_WINDOWS_DRIVE.test(raw)
+  ) {
+    throw new IngestValidationError("path_must_be_relative", {
+      code: "PATH_INVALID",
+    });
   }
 
   const posixish = raw.replace(/\\/g, "/");
   const normalized = path.posix.normalize(posixish);
 
   if (!normalized || normalized === "." || normalized === "..") {
-    throw new IngestValidationError("path_invalid", { code: "PATH_INVALID" });
+    throw new IngestValidationError("path_invalid", {
+      code: "PATH_INVALID",
+    });
   }
 
   if (normalized.startsWith("../") || normalized.includes("/../")) {
-    throw new IngestValidationError("path_parent_escape", { code: "PATH_INVALID" });
+    throw new IngestValidationError("path_parent_escape", {
+      code: "PATH_INVALID",
+    });
   }
 
   const segments = splitPosixSegments(normalized);
+
   if (!segments.length) {
-    throw new IngestValidationError("path_invalid", { code: "PATH_INVALID" });
+    throw new IngestValidationError("path_invalid", {
+      code: "PATH_INVALID",
+    });
   }
 
   for (const seg of segments) {
     if (seg === "." || seg === "..") {
-      throw new IngestValidationError("path_segment_invalid", { code: "PATH_INVALID" });
+      throw new IngestValidationError("path_segment_invalid", {
+        code: "PATH_INVALID",
+      });
     }
+
     if (RE_CONTROL.test(seg)) {
-      throw new IngestValidationError("path_segment_control_chars", { code: "PATH_INVALID" });
+      throw new IngestValidationError("path_segment_control_chars", {
+        code: "PATH_INVALID",
+      });
     }
   }
 
   const out = segments.join("/");
+
   if (!out || out.length > MAX_PATH_CHARS) {
-    throw new IngestValidationError("path_invalid", { code: "PATH_INVALID" });
+    throw new IngestValidationError("path_invalid", {
+      code: "PATH_INVALID",
+    });
   }
 
   return out;

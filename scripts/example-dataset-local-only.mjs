@@ -6,6 +6,7 @@ const TEST_ROOT_DIR = process.env.TEST_ROOT_DIR || "";
 const TEST_DATASET_KEY = process.env.TEST_DATASET_KEY || "hf_local_test_dataset_001";
 const TEST_PROGRAM = process.env.TEST_PROGRAM || "program";
 const TEST_VERSION_LABEL = process.env.TEST_VERSION_LABEL || "v1";
+const TEST_HEDERA_NETWORK = process.env.TEST_HEDERA_NETWORK || "";
 const TEST_EVIDENCE_POINTER =
   process.env.TEST_EVIDENCE_POINTER || `file://${TEST_ROOT_DIR}`;
 
@@ -17,9 +18,21 @@ function todayUtcDate() {
   return new Date().toISOString().slice(0, 10);
 }
 
+function parseOptionalHederaNetwork(value) {
+  const network = String(value || "").trim().toLowerCase();
+  if (!network) return undefined;
+  if (network !== "testnet" && network !== "mainnet") {
+    throw new Error("TEST_HEDERA_NETWORK must be testnet, mainnet, or empty");
+  }
+  return network;
+}
+
 async function main() {
   console.log("\n[1] Running local-only dataset execution...\n");
 
+  // Network is intentionally not passed into local evidence execution. Dataset
+  // content identity must remain identical regardless of the eventual ledger.
+  const hederaNetwork = parseOptionalHederaNetwork(TEST_HEDERA_NETWORK);
   const result = await executeDatasetAnchorLocalOnly({
     identity: {
       dataset_key: TEST_DATASET_KEY,
@@ -45,6 +58,10 @@ async function main() {
   const evidence = result.local.evidence;
   const receipt = result.local.receipt;
 
+  if (receipt.hedera_network != null) {
+    throw new Error("Local hash-only receipt unexpectedly contains hedera_network");
+  }
+
   const metadataForPage = {
     source: "hf-local-package",
     proof_date: todayUtcDate(),
@@ -54,6 +71,7 @@ async function main() {
     datasetKey: TEST_DATASET_KEY,
     program: TEST_PROGRAM,
     versionLabel: TEST_VERSION_LABEL,
+    ...(hederaNetwork ? { hederaNetwork } : {}),
     evidencePointer: TEST_EVIDENCE_POINTER,
     metadataText: JSON.stringify(metadataForPage, null, 2),
     evidenceText: JSON.stringify(evidence, null, 2),
@@ -64,6 +82,8 @@ async function main() {
     JSON.stringify(
       {
         dataset_key: evidence.dataset_key,
+        planned_submit_hedera_network: hederaNetwork ?? null,
+        local_receipt_hedera_network: receipt.hedera_network ?? null,
         dataset_fingerprint: evidence.dataset_fingerprint,
         bundle_digest: evidence.bundle_digest,
         merkle_root: evidence.merkle_root,
@@ -94,6 +114,8 @@ async function main() {
   console.log(pageReady.program);
   console.log("\nversionLabel:");
   console.log(pageReady.versionLabel);
+  console.log("\nhederaNetwork (optional future submit target; not part of local evidence):");
+  console.log(pageReady.hederaNetwork ?? "");
   console.log("\nevidencePointer:");
   console.log(pageReady.evidencePointer);
   console.log("\nmetadataText:");

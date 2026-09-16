@@ -1,6 +1,6 @@
 // ============================================================================
 // File: src/ingest/validators.ts
-// Version: 1.0-hf-ingest-validators-v1 | 2026-03-06
+// Version: 1.2-hf-ingest-hedera-network-validation-v1 | 2026-09-09
 // Purpose:
 //   Runtime validation for untrusted generic ingest JSON at HF boundaries.
 // Notes:
@@ -11,6 +11,7 @@
 import type {
   FileMaterial,
   FileSetMaterial,
+  HederaNetwork,
   IngestBundleV1,
   IngestIdentity,
   IngestResult,
@@ -41,6 +42,7 @@ import { normalizeRelPath } from "./pathNorm.js";
 import { IngestValidationError } from "./errors.js";
 
 const RE_OBJECT_KEY = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$/;
+const RE_OBJECT_KEY_CANONICAL = /^[a-z0-9][a-z0-9_.:-]{0,255}$/;
 const RE_PROGRAM = /^[a-z][a-z0-9_:-]{1,63}$/;
 const RE_HEX512 = /^[0-9a-f]{128}$/;
 const RE_YMD = /^\d{4}-\d{2}-\d{2}$/;
@@ -183,9 +185,40 @@ function parseMode(x: unknown): IngestMode {
   return s as IngestMode;
 }
 
+function parseHederaNetwork(x: unknown): HederaNetwork | undefined {
+  if (x === undefined || x === null || x === "") return undefined;
+  const network = asString(x, "hedera_network").trim().toLowerCase();
+  if (network !== "testnet" && network !== "mainnet") {
+    throw new IngestValidationError("hedera_network_invalid", {
+      code: "SCHEMA_INVALID",
+    });
+  }
+  return network;
+}
+
 function parseObjectKey(x: unknown): string {
   const s = asString(x, "object_key").trim();
   if (!s || s.length > MAX_OBJECT_KEY_LEN || !RE_OBJECT_KEY.test(s)) {
+    throw new IngestValidationError("object_key_invalid", { code: "SCHEMA_INVALID" });
+  }
+  return s;
+}
+
+function normalizeRequestObjectKey(x: unknown): string {
+  return asString(x, "object_key")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "-")
+    .replace(/[^a-z0-9_.:-]/g, "")
+    .replace(/-+/g, "-")
+    .replace(/^[^a-z0-9]+/g, "")
+    .replace(/[^a-z0-9]+$/g, "")
+    .slice(0, MAX_OBJECT_KEY_LEN);
+}
+
+function parseRequestObjectKey(x: unknown): string {
+  const s = normalizeRequestObjectKey(x);
+  if (!s || s.length > MAX_OBJECT_KEY_LEN || !RE_OBJECT_KEY_CANONICAL.test(s)) {
     throw new IngestValidationError("object_key_invalid", { code: "SCHEMA_INVALID" });
   }
   return s;
@@ -209,13 +242,18 @@ function parseKind(x: unknown, where = "object_kind"): IngestMaterialKind {
   return s as IngestMaterialKind;
 }
 
-function parseIdentity(x: unknown): IngestIdentity {
+function parseIdentity(
+  x: unknown,
+  opts: Readonly<{ normalizeObjectKey?: boolean }> = {}
+): IngestIdentity {
   if (!isRecord(x)) {
     throw new IngestValidationError("identity_invalid", { code: "SCHEMA_INVALID" });
   }
   assertNoUnknownKeys(x, ["object_key", "object_kind", "version_label", "program"], "identity");
 
-  const object_key = parseObjectKey(x.object_key);
+  const object_key = opts.normalizeObjectKey
+    ? parseRequestObjectKey(x.object_key)
+    : parseObjectKey(x.object_key);
   const object_kind = parseKind(x.object_kind, "object_kind");
   const version_label = asOptionalString(x.version_label, "version_label", MAX_VERSION_LABEL_LEN);
   const program = parseProgram(x.program);
@@ -397,18 +435,19 @@ export function parseIngestExecuteRequestV1(body: unknown): IngestExecuteRequest
 
   assertNoUnknownKeys(
     body,
-    ["mode", "identity", "material", "metadata", "evidence_pointer", "domain", "proof_date", "issue_certificate"],
+    ["mode", "identity", "material", "metadata", "evidence_pointer", "domain", "proof_date", "hedera_network", "issue_certificate"],
     "IngestExecuteRequestV1"
   );
 
   const mode = parseMode(body.mode);
-  const identity = parseIdentity(body.identity);
+  const identity = parseIdentity(body.identity, { normalizeObjectKey: true });
   const material = parseMaterial(body.material);
   const metadata =
     body.metadata === undefined ? undefined : (sanitizeJsonValue(body.metadata) as Record<string, unknown>);
   const evidence_pointer = asOptionalString(body.evidence_pointer, "evidence_pointer", MAX_POINTER_LEN);
   const domain = asOptionalString(body.domain, "domain", MAX_DOMAIN_LEN);
   const proof_date = asOptionalString(body.proof_date, "proof_date", 10);
+  const hedera_network = parseHederaNetwork(body.hedera_network);
   const issue_certificate =
     body.issue_certificate === undefined
       ? undefined
@@ -431,6 +470,12 @@ export function parseIngestExecuteRequestV1(body: unknown): IngestExecuteRequest
     throw new IngestValidationError("proof_date_required", { code: "SCHEMA_INVALID" });
   }
 
+  if (mode !== "register_and_anchor" && hedera_network !== undefined) {
+    throw new IngestValidationError("hedera_network_forbidden_for_local_mode", {
+      code: "SCHEMA_INVALID",
+    });
+  }
+
   return Object.freeze({
     mode,
     identity,
@@ -439,6 +484,7 @@ export function parseIngestExecuteRequestV1(body: unknown): IngestExecuteRequest
     ...(evidence_pointer !== undefined ? { evidence_pointer } : {}),
     ...(domain !== undefined ? { domain } : {}),
     ...(proof_date !== undefined ? { proof_date } : {}),
+    ...(hedera_network !== undefined ? { hedera_network } : {}),
     ...(issue_certificate !== undefined ? { issue_certificate } : {}),
   });
 }
@@ -485,6 +531,8 @@ export type IngestSubmitRequestV1 = Readonly<{
   evidence_pointer: string;
   domain: string;
   proof_date: string;
+  hedera_network?: HederaNetwork;
+  issue_certificate?: boolean;
 }>;
 
 export function parseIngestSubmitRequestV1(body: unknown): IngestSubmitRequestV1 {
@@ -494,7 +542,7 @@ export function parseIngestSubmitRequestV1(body: unknown): IngestSubmitRequestV1
 
   assertNoUnknownKeys(
     body,
-    ["mode", "identity", "evidence", "metadata", "evidence_pointer", "domain", "proof_date", "issue_certificate"],
+    ["mode", "identity", "evidence", "metadata", "evidence_pointer", "domain", "proof_date", "hedera_network", "issue_certificate"],
     "IngestSubmitRequestV1"
   );
 
@@ -503,13 +551,14 @@ export function parseIngestSubmitRequestV1(body: unknown): IngestSubmitRequestV1
     throw new IngestValidationError("submit_mode_invalid", { code: "SCHEMA_INVALID" });
   }
 
-  const identity = parseIdentity(body.identity);
+  const identity = parseIdentity(body.identity, { normalizeObjectKey: true });
   const evidence = parseIngestResultV1(body.evidence);
   const metadata =
     body.metadata === undefined ? undefined : (sanitizeJsonValue(body.metadata) as Record<string, unknown>);
   const evidence_pointer = asOptionalString(body.evidence_pointer, "evidence_pointer", MAX_POINTER_LEN);
   const domain = asOptionalString(body.domain, "domain", MAX_DOMAIN_LEN);
   const proof_date = asOptionalString(body.proof_date, "proof_date", 10);
+  const hedera_network = parseHederaNetwork(body.hedera_network);
   const issue_certificate =
     body.issue_certificate === undefined
       ? undefined
@@ -525,6 +574,18 @@ export function parseIngestSubmitRequestV1(body: unknown): IngestSubmitRequestV1
     throw new IngestValidationError("proof_date_required", { code: "SCHEMA_INVALID" });
   }
 
+  if (identity.object_key !== evidence.object_key) {
+    throw new IngestValidationError("identity_evidence_object_key_mismatch", {
+      code: "SCHEMA_INVALID",
+    });
+  }
+
+  if (identity.object_kind !== evidence.object_kind) {
+    throw new IngestValidationError("identity_evidence_object_kind_mismatch", {
+      code: "SCHEMA_INVALID",
+    });
+  }
+
   return Object.freeze({
     mode,
     identity,
@@ -532,6 +593,7 @@ export function parseIngestSubmitRequestV1(body: unknown): IngestSubmitRequestV1
     evidence_pointer,
     domain,
     proof_date,
+    ...(hedera_network !== undefined ? { hedera_network } : {}),
     ...(metadata !== undefined ? { metadata } : {}),
     ...(issue_certificate !== undefined ? { issue_certificate } : {}),
   });
@@ -834,7 +896,7 @@ export function parseIngestReceiptV1(body: unknown): IngestReceiptV1 {
 
   assertNoUnknownKeys(
     body,
-   ["v", "kind", "receipt_id", "mode", "identity", "rules", "evidence", "anchor", "pointers", "metadata", "core"],
+   ["v", "kind", "receipt_id", "mode", "hedera_network", "identity", "rules", "evidence", "anchor", "pointers", "metadata", "core"],
     "IngestReceiptV1"
   );
 
@@ -853,6 +915,7 @@ export function parseIngestReceiptV1(body: unknown): IngestReceiptV1 {
   }
 
   const mode = parseMode(body.mode);
+  const hedera_network = parseHederaNetwork(body.hedera_network);
   const identity = parseIdentity(body.identity);
   const rules = parseReceiptRules(body.rules);
 
@@ -888,6 +951,10 @@ export function parseIngestReceiptV1(body: unknown): IngestReceiptV1 {
     if (!anchor?.proof_date) {
       throw new IngestValidationError("receipt_anchor_proof_date_required", { code: "SCHEMA_INVALID" });
     }
+  } else if (hedera_network !== undefined) {
+    throw new IngestValidationError("receipt_local_hedera_network_forbidden", {
+      code: "SCHEMA_INVALID",
+    });
   }
 
   return Object.freeze({
@@ -895,6 +962,7 @@ export function parseIngestReceiptV1(body: unknown): IngestReceiptV1 {
     kind: "ingest_receipt",
     receipt_id,
     mode,
+    ...(hedera_network !== undefined ? { hedera_network } : {}),
     identity,
     rules,
     evidence: Object.freeze({
@@ -918,6 +986,8 @@ export type IngestPlanRequestV1 = Readonly<{
   material: IngestMaterial;
   domain?: string | null;
   proof_date?: string | null;
+  hedera_network?: HederaNetwork | null;
+  issue_certificate?: boolean;
 }>;
 
 export function parseIngestPlanRequestV1(body: unknown): IngestPlanRequestV1 {
@@ -928,6 +998,12 @@ export function parseIngestPlanRequestV1(body: unknown): IngestPlanRequestV1 {
     material: parsed.material,
     ...(parsed.domain !== undefined ? { domain: parsed.domain } : {}),
     ...(parsed.proof_date !== undefined ? { proof_date: parsed.proof_date } : {}),
+    ...(parsed.hedera_network !== undefined
+      ? { hedera_network: parsed.hedera_network }
+      : {}),
+    ...(parsed.issue_certificate !== undefined
+      ? { issue_certificate: parsed.issue_certificate }
+      : {}),
   });
 }
 

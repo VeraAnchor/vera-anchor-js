@@ -1,5 +1,5 @@
 // src/datasets/workflow.ts
-// Version: 1.0-hf-datasets-workflow-v1 | 2026-03-05
+// Version: 1.1-hedera-network-anchor-identity | 2026-09-07
 // Purpose:
 //   Orchestrate scan -> hash -> merkle -> bundle -> fingerprints.
 // Notes:
@@ -22,20 +22,26 @@ export function planAnchor(input: AnchorPlanRequestV1): AnchorPlan {
   const datasetKey = String(parsed?.identity?.dataset_key ?? "").trim();
   if (!datasetKey) throw new DatasetError("dataset_key_required", { code: "INPUT_INVALID" });
 
-  // plan_id should not depend on machine-specific absolute paths
+  // Content evidence remains network-independent. Only ledger-bound plans include
+  // Hedera network identity, preserving v1 plan IDs for legacy/implicit-network calls.
+  const hederaNetwork =
+    parsed.mode === "register_and_anchor" ? parsed.hedera_network ?? null : null;
+  const planValue = {
+    dataset_key: datasetKey,
+    version_label: parsed.identity.version_label ?? null,
+    program: parsed.identity.program ?? null,
+    rules: parsed.rules ?? null,
+    mode: parsed.mode,
+    issue_certificate:
+      typeof parsed.issue_certificate === "boolean"
+        ? parsed.issue_certificate
+        : null,
+    ...(hederaNetwork ? { hedera_network: hederaNetwork } : {}),
+  };
+
   const plan_id = hashJsonDigest({
-    domain: "va:dataset:plan:v1",
-    value: {
-      dataset_key: datasetKey,
-      version_label: parsed.identity.version_label ?? null,
-      program: parsed.identity.program ?? null,
-      rules: parsed.rules ?? null,
-      mode: parsed.mode,
-      issue_certificate:
-        typeof parsed.issue_certificate === "boolean"
-          ? parsed.issue_certificate
-          : null,
-    },
+    domain: hederaNetwork ? "va:dataset:plan:v2" : "va:dataset:plan:v1",
+    value: planValue,
     alg: "sha3-512",
     encoding: "hex_lower",
   });
@@ -47,6 +53,7 @@ export function planAnchor(input: AnchorPlanRequestV1): AnchorPlan {
 
   return Object.freeze({
     dataset_key: datasetKey,
+    ...(hederaNetwork ? { hedera_network: hederaNetwork } : {}),
     plan_id,
     steps: Object.freeze(steps.slice()),
   });
@@ -80,6 +87,8 @@ export async function executeAnchor(
 
   const bd = bundleDigest(bundle);
   const fp = datasetFingerprint(bundle);
+  // This remains a content-evidence idempotency key. The orchestrator derives a
+  // separate network-bound operation key before any Core mutation.
   const idem = idempotencyKey(datasetKey, fp);
 
   return Object.freeze({

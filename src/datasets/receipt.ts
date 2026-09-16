@@ -1,31 +1,37 @@
 // ============================================================================
 // File: src/datasets/receipt.ts
-// Version: 1.0-hf-datasets-receipt-v1 | 2026-03-06
+// Version: 1.2-receipt-runtime-hardening | 2026-09-08
 // Purpose:
 //   Deterministic receipt builder for dataset anchor flows.
 // Notes:
 //   - Pure, side-effect free.
 //   - Receipt ID is a deterministic hash over the receipt body excluding receipt_id.
+//   - Built receipts are passed through the canonical runtime receipt validator.
 // ============================================================================
 
 import { hashJsonDigest } from "../hashing/contract.js";
-import type { AnchorResult } from "./types.js";
-import type { DatasetReceiptV1 } from "./validators.js";
+import type { AnchorResult, HederaNetwork } from "./types.js";
+import { parseDatasetReceiptV1, type DatasetReceiptV1 } from "./validators.js";
 
 function stripUndefined<T extends Record<string, unknown>>(obj: T): T {
   const out: Record<string, unknown> = {};
+
   for (const [k, v] of Object.entries(obj)) {
     if (v !== undefined) out[k] = v;
   }
+
   return out as T;
 }
 
 function pickDatasetCore(core: any): Record<string, unknown> | undefined {
   const ds = core?.dataset?.dataset ?? core?.dataset ?? null;
+
   if (!ds || typeof ds !== "object") return undefined;
+
   return stripUndefined({
     id: ds.id ?? undefined,
     dataset_key: ds.dataset_key ?? undefined,
+    hedera_network: ds.hedera_network ?? undefined,
     org_id: ds.org_id ?? undefined,
     program: ds.program ?? undefined,
     display_name: ds.display_name ?? undefined,
@@ -40,6 +46,7 @@ function pickDatasetCore(core: any): Record<string, unknown> | undefined {
 
 function pickVersionCore(core: any): Record<string, unknown> | undefined {
   const raw = core?.version ?? null;
+
   const ver =
     raw &&
     typeof raw === "object" &&
@@ -47,10 +54,13 @@ function pickVersionCore(core: any): Record<string, unknown> | undefined {
     typeof raw.version === "object"
       ? raw.version
       : raw;
+
   if (!ver || typeof ver !== "object") return undefined;
+
   return stripUndefined({
     id: ver.id ?? undefined,
     dataset_key: ver.dataset_key ?? undefined,
+    hedera_network: ver.hedera_network ?? undefined,
     version: ver.version ?? undefined,
     dataset_fingerprint: ver.dataset_fingerprint ?? undefined,
     matrix_path: ver.matrix_path ?? undefined,
@@ -65,17 +75,9 @@ function pickVersionCore(core: any): Record<string, unknown> | undefined {
   });
 }
 
-function pickPublishedCore(core: any): Record<string, unknown> | undefined {
-  const pub = core?.published ?? null;
-  if (!pub || typeof pub !== "object") return undefined;
-  return stripUndefined({
-    published: pub.published ?? undefined,
-    target: pub.target ?? undefined,
-  });
-}
-
 function pickCertificateCore(core: any): Record<string, unknown> | undefined {
   const cert = core?.certificate ?? null;
+
   if (!cert || typeof cert !== "object") return undefined;
 
   const nft = cert?.nft ?? null;
@@ -104,26 +106,50 @@ function pickCertificateCore(core: any): Record<string, unknown> | undefined {
   });
 }
 
+function pickPublishedCore(core: any): Record<string, unknown> | undefined {
+  const pub = core?.published ?? null;
+
+  if (!pub || typeof pub !== "object") return undefined;
+
+  return stripUndefined({
+    published: pub.published ?? undefined,
+    hedera_network: pub.hedera_network ?? undefined,
+    target: pub.target ?? undefined,
+  });
+}
+
 export function buildDatasetReceiptV1(opts: {
   mode: "hash_only" | "register_and_anchor";
   evidence: AnchorResult;
+  hedera_network?: HederaNetwork | null;
   evidence_pointer?: string | null;
   core?: Record<string, unknown> | null;
 }): DatasetReceiptV1 {
   const bundle = (opts.evidence as any)?.bundle;
+
   const dataset_identity = bundle?.dataset_identity ?? {
     dataset_key: opts.evidence.dataset_key,
   };
+
   const rules = bundle?.rules ?? {};
+
   const file_count = Number(bundle?.summary?.file_count ?? 0);
   const total_bytes = Number(bundle?.summary?.total_bytes ?? 0);
 
   const core = opts.core
     ? stripUndefined({
-        ...(pickDatasetCore(opts.core) ? { dataset: pickDatasetCore(opts.core) } : {}),
-        ...(pickVersionCore(opts.core) ? { version: pickVersionCore(opts.core) } : {}),
-        ...(pickPublishedCore(opts.core) ? { published: pickPublishedCore(opts.core) } : {}),
-        ...(pickCertificateCore(opts.core) ? { certificate: pickCertificateCore(opts.core) } : {}),
+        ...(pickDatasetCore(opts.core)
+          ? { dataset: pickDatasetCore(opts.core) }
+          : {}),
+        ...(pickVersionCore(opts.core)
+          ? { version: pickVersionCore(opts.core) }
+          : {}),
+        ...(pickPublishedCore(opts.core)
+          ? { published: pickPublishedCore(opts.core) }
+          : {}),
+        ...(pickCertificateCore(opts.core)
+          ? { certificate: pickCertificateCore(opts.core) }
+          : {}),
       })
     : undefined;
 
@@ -131,6 +157,9 @@ export function buildDatasetReceiptV1(opts: {
     v: "v1" as const,
     kind: "dataset_anchor_receipt" as const,
     mode: opts.mode,
+    ...(opts.hedera_network
+      ? { hedera_network: opts.hedera_network }
+      : {}),
     dataset_identity,
     rules,
     evidence: {
@@ -141,7 +170,9 @@ export function buildDatasetReceiptV1(opts: {
       file_count,
       total_bytes,
     },
-    ...(opts.evidence_pointer ? { pointers: { evidence_pointer: opts.evidence_pointer } } : {}),
+    ...(opts.evidence_pointer
+      ? { pointers: { evidence_pointer: opts.evidence_pointer } }
+      : {}),
     ...(core && Object.keys(core).length > 0 ? { core } : {}),
   });
 
@@ -152,8 +183,8 @@ export function buildDatasetReceiptV1(opts: {
     encoding: "hex_lower",
   });
 
-  return Object.freeze({
+  return parseDatasetReceiptV1({
     ...body,
     receipt_id,
-  }) as DatasetReceiptV1;
+  });
 }

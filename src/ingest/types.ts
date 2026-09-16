@@ -1,28 +1,26 @@
 // ============================================================================
 // File: src/ingest/types.ts
-// Version: 1.0-hf-ingest-types-v1 | 2026-03-06
+// Version: 1.1-hf-ingest-hedera-network-types-v1 | 2026-09-09
 // Purpose:
 //   Public types for local-first generic ingest workflows.
 // Notes:
 //   - Separate from src/datasets/* on purpose.
 //   - Supports generic artifacts smaller / broader than datasets.
+//   - Hedera network is ledger intent, not content-evidence identity.
 // ============================================================================
 
 export type IngestMode = "hash_only" | "merkle_only" | "register_and_anchor";
-
 export type IngestObjectKind = "json" | "text" | "file" | "file_set";
-
 export type IngestMaterialKind = "json" | "text" | "file" | "file_set";
+export type HederaNetwork = "testnet" | "mainnet";
 
 export type IngestRules = Readonly<{
   include_globs?: ReadonlyArray<string>;
   exclude_globs?: ReadonlyArray<string>;
   allowed_suffixes?: ReadonlyArray<string>;
-
   max_files?: number;
   max_total_bytes?: number;
   max_single_file_bytes?: number;
-
   follow_symlinks?: boolean;
   redact_paths?: boolean;
   normalize_line_endings?: boolean;
@@ -71,11 +69,13 @@ export type IngestInput = Readonly<{
   evidence_pointer?: string | null;
   domain?: string | null;
   proof_date?: string | null;
+  hedera_network?: HederaNetwork | null;
   issue_certificate?: boolean;
 }>;
 
 export type IngestPlan = Readonly<{
   object_key: string;
+  hedera_network?: HederaNetwork;
   plan_id: string;
   steps: ReadonlyArray<
     "normalize" | "scan" | "hash" | "merkle" | "bundle" | "anchor_payload"

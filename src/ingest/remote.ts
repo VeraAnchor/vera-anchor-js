@@ -1,6 +1,6 @@
 // ============================================================================
 // File: src/ingest/remote.ts
-// Version: 1.2-hf-ingest-remote-local-lib-submit-hardened | 2026-03-20
+// Version: 1.3-hf-ingest-remote-hedera-network-v1 | 2026-09-09
 // Purpose:
 //   Local-lib remote helpers for ingest flows.
 //   - Local-only execute + receipt
@@ -27,6 +27,7 @@ import {
 } from "./validators.js";
 import { verifySubmittedIngestEvidence } from "./verifier.js";
 import type {
+  HederaNetwork,
   IngestInput,
   IngestPlan,
   IngestResult,
@@ -39,6 +40,7 @@ export type IngestProgressHooks = Readonly<{
 
 export type IngestExecuteRemoteResponse = Readonly<{
   mode: "hash_only" | "merkle_only" | "register_and_anchor";
+  hedera_network?: HederaNetwork;
   evidence: IngestResult;
   receipt: IngestReceiptV1;
   core?: Readonly<{
@@ -51,6 +53,7 @@ export type IngestExecuteRemoteResponse = Readonly<{
 
 export type IngestSubmitRemoteResponse = Readonly<{
   mode: "register_and_anchor";
+  hedera_network?: HederaNetwork;
   evidence: IngestResult;
   receipt: IngestReceiptV1;
   core?: Readonly<{
@@ -61,22 +64,23 @@ export type IngestSubmitRemoteResponse = Readonly<{
   }>;
 }>;
 
+type IngestVerifyLayer = Readonly<{
+  ok: boolean;
+  mismatches: ReadonlyArray<unknown>;
+  computed?: Readonly<Record<string, unknown>>;
+}>;
+
 export type IngestVerifyRemoteResponse = Readonly<{
-  receipt_verify?: Readonly<{
+  receipt_verify?: IngestVerifyLayer;
+  bundle_verify?: IngestVerifyLayer;
+  artifact_binding?: IngestVerifyLayer;
+  network_binding?: Readonly<{
     ok: boolean;
-    mismatches: ReadonlyArray<unknown>;
-    computed?: Readonly<Record<string, unknown>>;
+    requested: HederaNetwork;
+    actual: HederaNetwork | null;
+    status: "matched" | "mismatch" | "missing_receipt_network";
   }>;
-  bundle_verify?: Readonly<{
-    ok: boolean;
-    mismatches: ReadonlyArray<unknown>;
-    computed?: Readonly<Record<string, unknown>>;
-  }>;
-  local_verify?: Readonly<{
-    ok: boolean;
-    mismatches: ReadonlyArray<unknown>;
-    computed?: Readonly<Record<string, unknown>>;
-  }>;
+  local_verify?: IngestVerifyLayer;
 }>;
 
 export type ExecuteIngestLocalOnlyInput = Readonly<{
@@ -95,6 +99,19 @@ export type ExecuteIngestLocalThenSubmitInput = Readonly<{
   request: IngestInput & { mode: "register_and_anchor" };
   hooks?: IngestProgressHooks;
 }>;
+
+function normalizeHederaNetwork(value: unknown): HederaNetwork | null {
+  if (value == null || String(value).trim() === "") return null;
+
+  const network = String(value).trim().toLowerCase();
+  if (network !== "testnet" && network !== "mainnet") {
+    const err = new Error("unsupported_hedera_network");
+    (err as any).code = "UNSUPPORTED_HEDERA_NETWORK";
+    throw err;
+  }
+
+  return network;
+}
 
 function normalizeFilePointer(input: IngestInput): string {
   const explicit = String(input.evidence_pointer ?? "").trim();
@@ -166,22 +183,23 @@ export async function submitIngestRemote(
 
 export async function verifyIngestRemote(
   config: HfLocalClientConfig,
-  req: IngestVerifyRequestV1
+  req: IngestVerifyRequestV1,
+  opts?: Readonly<{ hederaNetwork?: HederaNetwork | null }>
 ): Promise<IngestVerifyRemoteResponse> {
   const parsed = parseIngestVerifyRequestV1(req);
+  const network = normalizeHederaNetwork(opts?.hederaNetwork);
 
-  return postJson<IngestVerifyRemoteResponse>(
-    config,
-    "/v1/ingest/verify",
-    parsed
-  );
+  const route = network
+    ? `/v1/ingest/verify?hedera_network=${encodeURIComponent(network)}`
+    : "/v1/ingest/verify";
+
+  return postJson<IngestVerifyRemoteResponse>(config, route, parsed);
 }
 
 export async function executeIngestLocalOnly(
   input: ExecuteIngestLocalOnlyInput
 ): Promise<ExecuteIngestLocalOnlyResult> {
   const parsed = parseIngestExecuteRequestV1(input.request);
-
   const evidence = await executeIngest(parsed, input.hooks);
 
   const receipt = buildIngestReceiptV1({
@@ -213,8 +231,11 @@ export async function executeIngestLocalThenSubmit(
   remote: IngestSubmitRemoteResponse;
 }>> {
   const parsed = parseIngestExecuteRequestV1(input.request);
+
   if (parsed.mode !== "register_and_anchor") {
-    const err = new Error("executeIngestLocalThenSubmit requires mode=register_and_anchor");
+    const err = new Error(
+      "executeIngestLocalThenSubmit requires mode=register_and_anchor"
+    );
     (err as any).code = "INVALID_MODE";
     throw err;
   }
@@ -255,6 +276,9 @@ export async function executeIngestLocalThenSubmit(
       evidence_pointer: evidencePointer,
       domain: String(parsed.domain),
       proof_date: String(parsed.proof_date),
+      ...(parsed.hedera_network
+        ? { hedera_network: parsed.hedera_network }
+        : {}),
       ...(parsed.metadata ? { metadata: parsed.metadata } : {}),
       ...(typeof parsed.issue_certificate === "boolean"
         ? { issue_certificate: parsed.issue_certificate }

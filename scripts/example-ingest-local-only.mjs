@@ -12,9 +12,19 @@ const TEST_TEXT = process.env.TEST_TEXT || "hello world";
 const TEST_JSON = process.env.TEST_JSON || "";
 
 const TEST_EVIDENCE_POINTER = process.env.TEST_EVIDENCE_POINTER || "";
+const TEST_HEDERA_NETWORK = process.env.TEST_HEDERA_NETWORK || "";
 
 function todayUtcDate() {
   return new Date().toISOString().slice(0, 10);
+}
+
+function parseOptionalHederaNetwork(value) {
+  const network = String(value || "").trim().toLowerCase();
+  if (!network) return undefined;
+  if (network !== "testnet" && network !== "mainnet") {
+    throw new Error("TEST_HEDERA_NETWORK must be testnet, mainnet, or empty");
+  }
+  return network;
 }
 
 function buildMaterial() {
@@ -68,6 +78,7 @@ function defaultEvidencePointer(material) {
 async function main() {
   const material = buildMaterial();
   const evidencePointer = defaultEvidencePointer(material);
+  const hederaNetwork = parseOptionalHederaNetwork(TEST_HEDERA_NETWORK);
   if ((material.kind === "text" || material.kind === "json") && !evidencePointer) {
     throw new Error(
       `Missing TEST_EVIDENCE_POINTER for ${material.kind}. ` +
@@ -114,6 +125,10 @@ async function main() {
   const evidence = result.local.evidence;
   const receipt = result.local.receipt;
 
+  if (receipt.hedera_network != null) {
+    throw new Error("Local ingest receipt unexpectedly contains hedera_network");
+  }
+
   const metadataForPage = {
     source: "hf-local-package",
     proof_date: todayUtcDate(),
@@ -125,6 +140,7 @@ async function main() {
     objectKind: TEST_OBJECT_KIND,
     program: TEST_PROGRAM,
     versionLabel: TEST_VERSION_LABEL,
+    ...(hederaNetwork ? { hederaNetwork } : {}),
     evidencePointer: evidencePointer || null,
     metadataText: JSON.stringify(metadataForPage, null, 2),
     evidenceText: JSON.stringify(evidence, null, 2),
@@ -136,6 +152,8 @@ async function main() {
       {
         object_key: evidence.object_key,
         object_kind: evidence.object_kind,
+        planned_submit_hedera_network: hederaNetwork ?? null,
+        local_receipt_hedera_network: receipt.hedera_network ?? null,
         fingerprint: evidence.fingerprint,
         bundle_digest: evidence.bundle_digest,
         merkle_root: evidence.merkle_root,
@@ -168,6 +186,8 @@ async function main() {
   console.log(pageReady.program);
   console.log("\nversionLabel:");
   console.log(pageReady.versionLabel);
+  console.log("\nhederaNetwork (optional future submit target; not part of local evidence):");
+  console.log(pageReady.hederaNetwork ?? "");
   console.log("\nevidencePointer:");
   console.log(pageReady.evidencePointer);
   console.log("\nmetadataText:");

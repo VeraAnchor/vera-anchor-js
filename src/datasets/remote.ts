@@ -13,6 +13,7 @@ import type {
   AnchorResult,
   DatasetRules,
   DatasetIdentity,
+  HederaNetwork,
 } from "./types.js";
 
 type DatasetAnchorProgressHooks = Readonly<{
@@ -30,12 +31,14 @@ type DatasetAnchorProgressHooks = Readonly<{
 
 export type DatasetAnchorPlanRemoteResponse = Readonly<{
   dataset_key: string;
+  hedera_network?: HederaNetwork;
   plan_id: string;
   steps: ReadonlyArray<string>;
 }>;
 
 export type DatasetAnchorSubmitRemoteResponse = Readonly<{
   mode: "register_and_anchor";
+  hedera_network?: HederaNetwork;
   evidence: AnchorResult;
   receipt: DatasetReceiptV1;
   core?: Readonly<{
@@ -87,6 +90,7 @@ export type ExecuteDatasetAnchorLocalOnlyResult = Readonly<{
 
 export type ExecuteDatasetAnchorLocalThenSubmitInput = Readonly<{
   identity: DatasetIdentity;
+  hedera_network?: HederaNetwork;
   root_dir: string;
   rules?: DatasetRules;
   display_name?: string;
@@ -205,6 +209,7 @@ export async function executeDatasetAnchorLocalThenSubmit(
     {
       mode: "register_and_anchor",
       identity: input.identity,
+      ...(input.hedera_network ? { hedera_network: input.hedera_network } : {}),
       evidence: local.local.evidence,
       evidence_pointer: input.evidence_pointer,
       ...(input.display_name ? { display_name: input.display_name } : {}),

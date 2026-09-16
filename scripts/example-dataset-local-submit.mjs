@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import {
   executeDatasetAnchorLocalThenSubmit,
+  planDatasetAnchorRemote,
 } from "../dist/index.js";
 
 const HF_BASE_URL = process.env.HF_BASE_URL || "https://hfapi.veraanchor.com";
@@ -11,6 +12,7 @@ const TEST_ROOT_DIR = process.env.TEST_ROOT_DIR || "";
 const TEST_DATASET_KEY = process.env.TEST_DATASET_KEY || "hf_local_test_dataset_001";
 const TEST_PROGRAM = process.env.TEST_PROGRAM || "program";
 const TEST_VERSION_LABEL = process.env.TEST_VERSION_LABEL || "v1";
+const TEST_HEDERA_NETWORK = process.env.TEST_HEDERA_NETWORK || "";
 const TEST_DISPLAY_NAME =
   process.env.TEST_DISPLAY_NAME || "HF local submit dataset test";
 const TEST_EVIDENCE_POINTER =
@@ -39,6 +41,48 @@ function parseOptionalBooleanEnv(value) {
   throw new Error("TEST_ISSUE_CERTIFICATE must be true, false, or empty");
 }
 
+function parseRequiredHederaNetwork(value) {
+  const network = String(value || "").trim().toLowerCase();
+  if (!network) {
+    throw new Error("Missing TEST_HEDERA_NETWORK (expected testnet or mainnet)");
+  }
+  if (network !== "testnet" && network !== "mainnet") {
+    throw new Error("TEST_HEDERA_NETWORK must be testnet or mainnet");
+  }
+  return network;
+}
+
+function assertEqual(label, expected, actual) {
+  if (expected !== actual) {
+    throw new Error(`${label} mismatch: expected ${String(expected)}, got ${String(actual)}`);
+  }
+}
+
+function assertNetworkIdentity(expectedNetwork, remote) {
+  const required = [
+    ["remote.hedera_network", remote?.hedera_network],
+    ["remote.receipt.hedera_network", remote?.receipt?.hedera_network],
+    ["remote.core.dataset.hedera_network", remote?.core?.dataset?.hedera_network],
+    ["remote.core.version.hedera_network", remote?.core?.version?.hedera_network],
+  ];
+
+  for (const [label, value] of required) {
+    if (value == null || String(value).trim() === "") {
+      throw new Error(`${label} missing for explicit ${expectedNetwork} submit`);
+    }
+    assertEqual(label, expectedNetwork, String(value).trim().toLowerCase());
+  }
+
+  const publishedNetwork = remote?.core?.published?.hedera_network;
+  if (publishedNetwork != null && String(publishedNetwork).trim() !== "") {
+    assertEqual(
+      "remote.core.published.hedera_network",
+      expectedNetwork,
+      String(publishedNetwork).trim().toLowerCase()
+    );
+  }
+}
+
 async function prepareRunOutput(baseDir, label) {
   const runDir = path.join(baseDir, `${timestampForDir()}-${label}`);
   const latestDir = path.join(baseDir, "latest");
@@ -61,61 +105,109 @@ if (!TEST_EVIDENCE_POINTER) {
 }
 
 async function main() {
+  const hederaNetwork = parseRequiredHederaNetwork(TEST_HEDERA_NETWORK);
   const issueCertificate = parseOptionalBooleanEnv(TEST_ISSUE_CERTIFICATE);
   const outputBaseDir = "./vera_anchor_dataset_receipts";
-  const outputLabel = safeSegment(TEST_DATASET_KEY, "dataset");
+  const outputLabel = safeSegment(`${TEST_DATASET_KEY}-${hederaNetwork}`, "dataset");
   const { runDir, latestDir } = await prepareRunOutput(outputBaseDir, outputLabel);
-  const runMeta = { output_dir: runDir, latest_dir: latestDir };
+  const runMeta = {
+    output_dir: runDir,
+    latest_dir: latestDir,
+    hedera_network: hederaNetwork,
+  };
 
-  console.log("\n[1] Running local -> HF dataset submit flow...\n");
+  const config = {
+    baseUrl: HF_BASE_URL,
+    auth: {
+      apiKey: HF_API_KEY,
+    },
+  };
 
-  const result = await executeDatasetAnchorLocalThenSubmit(
-    {
-      baseUrl: HF_BASE_URL,
-      auth: {
-        apiKey: HF_API_KEY,
+  const identity = {
+    dataset_key: TEST_DATASET_KEY,
+    program: TEST_PROGRAM,
+    version_label: TEST_VERSION_LABEL,
+  };
+
+  console.log("\n[1] Planning network-bound dataset anchor...\n");
+
+  const plan = await planDatasetAnchorRemote(config, {
+    mode: "register_and_anchor",
+    identity,
+    hedera_network: hederaNetwork,
+    ...(typeof issueCertificate === "boolean"
+      ? { issue_certificate: issueCertificate }
+      : {}),
+  });
+
+  assertEqual("plan.hedera_network", hederaNetwork, plan.hedera_network ?? null);
+
+  console.log("[plan summary]");
+  console.log(
+    JSON.stringify(
+      {
+        dataset_key: plan.dataset_key,
+        hedera_network: plan.hedera_network ?? null,
+        plan_id: plan.plan_id,
+        steps: plan.steps,
+      },
+      null,
+      2
+    )
+  );
+
+  console.log("\n[2] Running local -> HF dataset submit flow...\n");
+
+  const result = await executeDatasetAnchorLocalThenSubmit(config, {
+    identity,
+    hedera_network: hederaNetwork,
+    root_dir: TEST_ROOT_DIR,
+    display_name: TEST_DISPLAY_NAME,
+    metadata: {
+      source: "hf-local-package",
+      dataset_key: TEST_DATASET_KEY,
+      program: TEST_PROGRAM,
+      version_label: TEST_VERSION_LABEL,
+      test_source: "dataset-local-submit-example",
+    },
+    evidence_pointer: TEST_EVIDENCE_POINTER,
+    publish_visibility: "unlisted",
+    set_active: true,
+    ...(typeof issueCertificate === "boolean"
+      ? { issue_certificate: issueCertificate }
+      : {}),
+    hooks: {
+      onScanProgress: (p) => {
+        if (p?.event === "dir") {
+          console.log("[scan:dir]", p.rel ?? ".", p.files_seen ?? 0, p.total_bytes_seen ?? 0);
+        }
+      },
+      onHashProgress: (p) => {
+        if (p?.event === "file_done") {
+          console.log("[hash:file_done]", p.path_rel, p.bytes, p.sha3_512_prefix);
+        }
       },
     },
-    {
-      identity: {
-        dataset_key: TEST_DATASET_KEY,
-        program: TEST_PROGRAM,
-        version_label: TEST_VERSION_LABEL,
-      },
-      root_dir: TEST_ROOT_DIR,
-      display_name: TEST_DISPLAY_NAME,
-      metadata: {
-        source: "hf-local-package",
-        dataset_key: TEST_DATASET_KEY,
-        program: TEST_PROGRAM,
-        version_label: TEST_VERSION_LABEL,
-        test_source: "dataset-local-submit-example",
-      },
-      evidence_pointer: TEST_EVIDENCE_POINTER,
-      publish_visibility: "unlisted",
-      set_active: true,
-      ...(typeof issueCertificate === "boolean"
-        ? { issue_certificate: issueCertificate }
-        : {}),
-      hooks: {
-        onScanProgress: (p) => {
-          if (p?.event === "dir") {
-            console.log("[scan:dir]", p.rel ?? ".", p.files_seen ?? 0, p.total_bytes_seen ?? 0);
-          }
-        },
-        onHashProgress: (p) => {
-          if (p?.event === "file_done") {
-            console.log("[hash:file_done]", p.path_rel, p.bytes, p.sha3_512_prefix);
-          }
-        },
-      },
-    }
-  );
+  });
 
   const localEvidence = result.local.evidence;
   const localReceipt = result.local.receipt;
   const remote = result.remote;
 
+  assertEqual(
+    "dataset_fingerprint",
+    localEvidence.dataset_fingerprint,
+    remote.evidence?.dataset_fingerprint ?? null
+  );
+  assertEqual("bundle_digest", localEvidence.bundle_digest, remote.evidence?.bundle_digest ?? null);
+  assertEqual("merkle_root", localEvidence.merkle_root, remote.evidence?.merkle_root ?? null);
+  assertNetworkIdentity(hederaNetwork, remote);
+
+  if (localReceipt.hedera_network != null) {
+    throw new Error("Local hash-only receipt unexpectedly contains hedera_network");
+  }
+
+  await writeJson(path.join(runDir, "remote-plan.json"), plan);
   await writeJson(path.join(runDir, "local-receipt.json"), localReceipt);
   await writeJson(path.join(runDir, "local-evidence.json"), localEvidence);
   await writeJson(path.join(runDir, "remote-receipt.json"), remote.receipt);
@@ -123,6 +215,7 @@ async function main() {
   await writeJson(path.join(runDir, "remote-payload.json"), remote);
   await writeJson(path.join(runDir, "run-meta.json"), runMeta);
 
+  await writeJson(path.join(latestDir, "remote-plan.json"), plan);
   await writeJson(path.join(latestDir, "local-receipt.json"), localReceipt);
   await writeJson(path.join(latestDir, "local-evidence.json"), localEvidence);
   await writeJson(path.join(latestDir, "remote-receipt.json"), remote.receipt);
@@ -134,6 +227,13 @@ async function main() {
   console.log(
     JSON.stringify(
       {
+        requested_hedera_network: hederaNetwork,
+        plan_hedera_network: plan.hedera_network ?? null,
+        remote_hedera_network: remote.hedera_network ?? null,
+        receipt_hedera_network: remote.receipt?.hedera_network ?? null,
+        core_dataset_hedera_network: remote.core?.dataset?.hedera_network ?? null,
+        core_version_hedera_network: remote.core?.version?.hedera_network ?? null,
+        core_published_hedera_network: remote.core?.published?.hedera_network ?? null,
         local_dataset_fingerprint: localEvidence.dataset_fingerprint,
         remote_dataset_fingerprint: remote.evidence?.dataset_fingerprint ?? null,
         local_bundle_digest: localEvidence.bundle_digest,
@@ -159,17 +259,19 @@ async function main() {
     )
   );
 
-  console.log("\n[2] Full local receipt\n");
+  console.log("\n[3] Full local receipt\n");
   console.log(JSON.stringify(localReceipt, null, 2));
 
-  console.log("\n[3] Full remote payload\n");
+  console.log("\n[4] Full remote payload\n");
   console.log(JSON.stringify(remote, null, 2));
 
-  console.log("\n[4] Wrote verify inputs\n");
+  console.log("\n[5] Wrote verify inputs\n");
   console.log("run dir:");
   console.log(runDir);
   console.log("\nlatest dir:");
   console.log(latestDir);
+  console.log("\nrun remote plan:");
+  console.log(path.join(runDir, "remote-plan.json"));
   console.log("\nrun local receipt:");
   console.log(path.join(runDir, "local-receipt.json"));
   console.log("\nrun local evidence:");

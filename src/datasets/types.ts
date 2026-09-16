@@ -1,9 +1,10 @@
 // src/datasets/types.ts
-// Version: 1.0-hf-datasets-types-v1 | 2026-03-05
+// Version: 1.1-hedera-network-anchor-identity | 2026-09-07
 // Purpose:
 //   Public types for dataset anchoring workflow + bundle manifest.
 
 export type DatasetAnchorMode = "hash_only" | "register_and_anchor";
+export type HederaNetwork = "testnet" | "mainnet";
 
 export type DatasetRules = Readonly<{
   include_globs?: ReadonlyArray<string>;
@@ -34,6 +35,7 @@ export type AnchorInput = Readonly<{
 
 export type AnchorPlan = Readonly<{
   dataset_key: string;
+  hedera_network?: HederaNetwork;
   plan_id: string;
   steps: ReadonlyArray<"scan" | "hash" | "bundle" | "core_upsert" | "core_version" | "core_publish">;
 }>;
@@ -43,6 +45,7 @@ export type SubmittedAnchorEvidence = AnchorResult;
 export type AnchorSubmitInput = Readonly<{
   mode: "register_and_anchor";
   identity: DatasetIdentity;
+  hedera_network?: HederaNetwork;
   evidence: SubmittedAnchorEvidence;
   display_name?: string | null;
   metadata?: Readonly<Record<string, unknown>>;

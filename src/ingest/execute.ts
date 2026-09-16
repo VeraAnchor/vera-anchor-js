@@ -1,6 +1,6 @@
 // ============================================================================
 // File: src/ingest/execute.ts
-// Version: 1.0-hf-ingest-execute-v1 | 2026-03-06
+// Version: 1.1-hf-ingest-hedera-network-plan-v1 | 2026-09-09
 // Purpose:
 //   Orchestrate normalize -> scan -> hash -> merkle -> bundle for generic ingest.
 // Notes:
@@ -31,6 +31,7 @@ import { normalizeText } from "./textNorm.js";
 import { buildPathHash, hashScannedFile } from "./fileHash.js";
 import { buildIngestBundleV1, ingestBundleDigest, ingestFingerprint, ingestIdempotencyKey } from "./bundle.js";
 import { merkleRootFromItems } from "./merkle.js";
+import { buildIngestLeafHash } from "./leaf.js";
 import { parseIngestExecuteRequestV1, type IngestExecuteRequestV1 } from "./validators.js";
 import { hashJsonDigest } from "../hashing/contract.js";
 
@@ -49,29 +50,6 @@ export type ExecuteHooks = Readonly<{
 function fileNameOnly(p: string): string {
   const base = path.basename(String(p ?? "").trim());
   return normalizeRelPath(base);
-}
-
-function buildLeafHash(input: {
-  item_kind: IngestItem["item_kind"];
-  path_rel?: string;
-  path_hash?: string;
-  media_type?: string | null;
-  bytes: number;
-  sha3_512: string;
-}): string {
-  return hashJson({
-    domain: "va:ingest:leaf:v1",
-    value: {
-      item_kind: input.item_kind,
-      ...(input.path_rel ? { path_rel: input.path_rel } : {}),
-      ...(input.path_hash ? { path_hash: input.path_hash } : {}),
-      ...(input.media_type ? { media_type: input.media_type } : {}),
-      bytes: input.bytes,
-      sha3_512: input.sha3_512,
-    },
-    alg: "sha3-512",
-    encoding: "hex_lower",
-  }).digest;
 }
 
 function itemPathFields(pathRel: string, redactPaths: boolean): { path_rel?: string; path_hash?: string } {
@@ -114,7 +92,7 @@ async function executeJson(material: JsonMaterial): Promise<ReadonlyArray<Ingest
     sha3_512,
   };
 
-  const leaf_hash = buildLeafHash(itemBase);
+  const leaf_hash = buildIngestLeafHash(itemBase);
 
   return Object.freeze([
     Object.freeze({
@@ -145,7 +123,7 @@ async function executeText(material: TextMaterial): Promise<ReadonlyArray<Ingest
     sha3_512,
   };
 
-  const leaf_hash = buildLeafHash({
+  const leaf_hash = buildIngestLeafHash({
     item_kind: "text",
     media_type,
     bytes: normalized.bytes,
@@ -222,7 +200,7 @@ async function executeSingleFile(
     sha3_512: hashed.sha3_512,
   };
 
-  const leaf_hash = buildLeafHash({
+  const leaf_hash = buildIngestLeafHash({
     item_kind: "file",
     ...(pathFields.path_rel ? { path_rel: pathFields.path_rel } : {}),
     ...(pathFields.path_hash ? { path_hash: pathFields.path_hash } : {}),
@@ -265,7 +243,7 @@ async function executeFileSet(
 
     const pathFields = itemPathFields(hashed.path_rel, redactPaths);
 
-    const leaf_hash = buildLeafHash({
+    const leaf_hash = buildIngestLeafHash({
       item_kind: "file",
       ...(pathFields.path_rel ? { path_rel: pathFields.path_rel } : {}),
       ...(pathFields.path_hash ? { path_hash: pathFields.path_hash } : {}),
@@ -336,19 +314,35 @@ export function planIngest(input: IngestExecuteRequestV1): IngestPlan {
       ? parsed.material.rules ?? null
       : null;
 
+  const hedera_network =
+    parsed.mode === "register_and_anchor"
+      ? parsed.hedera_network ?? null
+      : null;
+
+  const planValue = {
+    object_key,
+    object_kind: parsed.identity.object_kind,
+    version_label: parsed.identity.version_label ?? null,
+    program: parsed.identity.program ?? null,
+    mode: parsed.mode,
+    material_kind: parsed.material.kind,
+    rules,
+    domain: parsed.domain ?? null,
+    proof_date: parsed.proof_date ?? null,
+    issue_certificate:
+      typeof parsed.issue_certificate === "boolean"
+        ? parsed.issue_certificate
+        : null,
+  };
+
   const plan_id = hashJsonDigest({
-    domain: "va:ingest:plan:v1",
-    value: {
-      object_key,
-      object_kind: parsed.identity.object_kind,
-      version_label: parsed.identity.version_label ?? null,
-      program: parsed.identity.program ?? null,
-      mode: parsed.mode,
-      material_kind: parsed.material.kind,
-      rules,
-      domain: parsed.domain ?? null,
-      proof_date: parsed.proof_date ?? null,
-    },
+    domain: hedera_network ? "va:ingest:plan:v2" : "va:ingest:plan:v1",
+    value: hedera_network
+      ? {
+          ...planValue,
+          hedera_network,
+        }
+      : planValue,
     alg: "sha3-512",
     encoding: "hex_lower",
   });
@@ -364,6 +358,7 @@ export function planIngest(input: IngestExecuteRequestV1): IngestPlan {
 
   return Object.freeze({
     object_key,
+    ...(hedera_network ? { hedera_network } : {}),
     plan_id,
     steps: Object.freeze(steps.slice()),
   });

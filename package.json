@@ -1,11 +1,11 @@
 {
-  "name": "vera-anchor",
-  "version": "0.1.2",
+  "name": "vera-anchor-js",
+  "version": "0.2.0",
   "type": "module",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "license": "SEE LICENSE IN LICENSE",
+  "license": "MIT AND Commons-Clause",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -31,7 +31,11 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "clean": "node -e \"import('node:fs/promises').then(fs => fs.rm('dist', { recursive: true, force: true }))\""
+    "clean": "rm -rf dist",
+    "test": "npm run test:conformance",
+    "test:conformance": "npm run build && node --test tests/conformance/datasets/datasetV1Conformance.test.mjs tests/conformance/ingest/ingestV1Conformance.test.mjs tests/conformance/ingest/remoteNetworkBoundary.test.mjs tests/conformance/ingest/pathNormParity.test.mjs",
+    "test:conformance:datasets": "npm run build && node --test tests/conformance/datasets/datasetV1Conformance.test.mjs",
+    "test:conformance:ingest": "npm run build && node --test tests/conformance/ingest/ingestV1Conformance.test.mjs"
   },
   "dependencies": {
     "picomatch": "^4.0.3"

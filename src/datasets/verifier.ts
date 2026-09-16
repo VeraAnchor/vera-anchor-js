@@ -126,6 +126,9 @@ export function verifyDatasetReceipt(receipt: unknown): DatasetVerifyResult {
     computed: Object.freeze({
       receipt_id: receiptId,
       idempotency_key: idem,
+      ...(parsed.hedera_network
+        ? { hedera_network: parsed.hedera_network }
+        : {}),
     }),
   });
 }
